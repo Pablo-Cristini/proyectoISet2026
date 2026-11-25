@@ -1,0 +1,7 @@
+# Solo para los tests (classpath:/config/ pisa a classpath:/application.yml).
+# Cada contexto de Spring usa su PROPIO historial Excel temporal, creado desde la plantilla por
+# HistorialExcelBootstrap: los tests nunca escriben en data/historial-academico.xlsx del proyecto, y una
+# corrida no depende de lo que haya dejado la anterior. HistorialExcelSyncIT lo pisa con @DynamicPropertySource.
+app:
+  historial:
+    excel-path: ${java.io.tmpdir}/siga-tests/${random.uuid}/historial-academico.xlsx

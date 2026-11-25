@@ -1,0 +1,15 @@
+# Perfil "local": se activa junto con "dev" (ver application.yml) y lo pisa en lo justo para que la
+# base NO se borre al reiniciar. La URL real la arma LocalDatabaseConfig (archivo data/siga-db.mv.db en
+# la raiz del proyecto, o SIGA_DB_PATH). Para volver a una base limpia: borrar data/siga-db.mv.db.
+# Los tests usan @ActiveProfiles("dev") y siguen con H2 en memoria.
+app:
+  db:
+    archivo: ${SIGA_DB_PATH:./data/siga-db}
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update # crea las tablas que falten, nunca borra datos
+  sql:
+    init:
+      mode: never # data.sql lo corre LocalDatabaseConfig solo si la base esta vacia

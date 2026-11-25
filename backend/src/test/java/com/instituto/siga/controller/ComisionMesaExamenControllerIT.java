@@ -1,0 +1,232 @@
+package com.instituto.siga.controller;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.instituto.siga.dto.request.CarreraRequest;
+import com.instituto.siga.dto.request.ComisionRequest;
+import com.instituto.siga.dto.request.HorarioRequest;
+import com.instituto.siga.dto.request.LoginRequest;
+import com.instituto.siga.dto.request.MateriaRequest;
+import com.instituto.siga.dto.request.MesaExamenRequest;
+import com.instituto.siga.dto.request.PlanEstudioRequest;
+import com.instituto.siga.entity.Turno;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.List;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/** Cubre Comision/Horario y MesaExamen: roles y las validaciones de docs/07 SS4.3/SS4.4 con JWT reales. */
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("dev")
+class ComisionMesaExamenControllerIT {
+
+    @Autowired
+    private MockMvc mockMvc;
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    private String tokenPara(String dni, String password) throws Exception {
+        String body = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new LoginRequest(dni, password))))
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).get("accessToken").asText();
+    }
+
+    private Long crearMateria(String admin, String codigo) throws Exception {
+        String body = mockMvc.perform(post("/api/v1/materias")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new MateriaRequest(codigo, "Materia " + codigo, 100, null))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        Long materiaCreada = objectMapper.readTree(body).get("id").asLong();
+        // Regla: la comisión es por (materia, carrera) y la materia tiene que pertenecer a la carrera.
+        // Se asocia al plan sembrado en data.sql (TDA 2024, id 1).
+        mockMvc.perform(post("/api/v1/materias/" + materiaCreada + "/plan/1")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"anio\":1,\"cuatrimestre\":1}"))
+                .andExpect(status().isOk());
+        return materiaCreada;
+    }
+
+    @Test
+    void alumno_noPuedeCrearComision_devuelve403() throws Exception {
+        String alumno = tokenPara("30333444", "Alumno1234");
+        ComisionRequest request = new ComisionRequest(1L, null, "A", "2026-1C", 40, null, List.of());
+
+        mockMvc.perform(post("/api/v1/comisiones")
+                        .header("Authorization", "Bearer " + alumno)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void admin_creaComisionConHorarios_yDuplicadaDevuelve409() throws Exception {
+        String admin = tokenPara("30111222", "Admin1234");
+        Long materiaId = crearMateria(admin, "MAT-CIT1");
+        HorarioRequest horario = new HorarioRequest(1, LocalTime.of(18, 0), LocalTime.of(22, 0), "Aula 3");
+        ComisionRequest request = new ComisionRequest(materiaId, null, "A", "2026-1C", 40, "Prof. Test", List.of(horario));
+
+        mockMvc.perform(post("/api/v1/comisiones")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.horarios[0].aula").value("Aula 3"));
+
+        mockMvc.perform(post("/api/v1/comisiones")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.codigo").value("COMISION_DUPLICADA"));
+    }
+
+    @Test
+    void admin_horariosSuperpuestosEnAlta_devuelve422() throws Exception {
+        String admin = tokenPara("30111222", "Admin1234");
+        Long materiaId = crearMateria(admin, "MAT-CIT2");
+        HorarioRequest h1 = new HorarioRequest(2, LocalTime.of(18, 0), LocalTime.of(22, 0), "Aula 1");
+        HorarioRequest h2 = new HorarioRequest(2, LocalTime.of(19, 0), LocalTime.of(20, 0), "Aula 2");
+        ComisionRequest request = new ComisionRequest(materiaId, null, "B", "2026-1C", 40, null, List.of(h1, h2));
+
+        mockMvc.perform(post("/api/v1/comisiones")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.codigo").value("HORARIO_SUPERPUESTO"));
+    }
+
+    @Test
+    void admin_mesaConFechaPasada_devuelve422() throws Exception {
+        String admin = tokenPara("30111222", "Admin1234");
+        Long materiaId = crearMateria(admin, "MAT-CIT3");
+        MesaExamenRequest request = new MesaExamenRequest(materiaId, LocalDate.now().minusDays(1), Turno.MANANA, 20, null, null, null, null, null, null, null);
+
+        mockMvc.perform(post("/api/v1/mesas-examen")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.codigo").value("MESA_FUERA_DE_FECHA"));
+    }
+
+    @Test
+    void admin_mesaDuplicada_devuelve409() throws Exception {
+        String admin = tokenPara("30111222", "Admin1234");
+        Long materiaId = crearMateria(admin, "MAT-CIT4");
+        MesaExamenRequest request = new MesaExamenRequest(materiaId, LocalDate.now().plusDays(60), Turno.TARDE, 20, null, null, null, null, null, null, null);
+
+        mockMvc.perform(post("/api/v1/mesas-examen")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/mesas-examen")
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.codigo").value("MESA_DUPLICADA"));
+    }
+
+    // ------------------------------------------------ comisiones por materia y carrera
+
+    private long crearCarreraConPlan(String admin, String codigo) throws Exception {
+        String carrera = mockMvc.perform(post("/api/v1/carreras").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CarreraRequest(codigo, "Carrera " + codigo))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long carreraId = objectMapper.readTree(carrera).get("id").asLong();
+        String plan = mockMvc.perform(post("/api/v1/carreras/" + carreraId + "/planes").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new PlanEstudioRequest("2024", true))))
+                .andExpect(status().is2xxSuccessful()).andReturn().getResponse().getContentAsString();
+        planDeLaCarrera = objectMapper.readTree(plan).get("id").asLong();
+        return carreraId;
+    }
+
+    private long planDeLaCarrera;
+
+    private void asociar(String admin, long materiaId, long planId) throws Exception {
+        mockMvc.perform(post("/api/v1/materias/" + materiaId + "/plan/" + planId).header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"anio\":1,\"cuatrimestre\":1}"))
+                .andExpect(status().isOk());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions postComision(String admin, ComisionRequest request) throws Exception {
+        return mockMvc.perform(post("/api/v1/comisiones").header("Authorization", "Bearer " + admin)
+                .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsString(request)));
+    }
+
+    @Test
+    void mismaMateria_variasComisionesPorCarrera_soloNoSeRepiteNombreYPeriodo() throws Exception {
+        String admin = tokenPara("30111222", "Admin1234");
+        Long materiaId = crearMateria(admin, "MAT-UNI1");           // queda en la carrera sembrada (TDA)
+        long otraCarrera = crearCarreraConPlan(admin, "UNI-C1");
+        asociar(admin, materiaId, planDeLaCarrera);                   // y tambien en otra carrera
+
+        // la materia esta en 2 carreras: sin carreraId no se puede deducir
+        postComision(admin, new ComisionRequest(materiaId, null, "A", "2026-1C", 30, null, List.of()))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.codigo").value("CARRERA_REQUERIDA"));
+
+        postComision(admin, new ComisionRequest(materiaId, 1L, "A", "2026-1C", 30, null, List.of()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.carreraId").value(1));
+        postComision(admin, new ComisionRequest(materiaId, otraCarrera, "A", "2026-1C", 30, null, List.of()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.carreraNombre").value("Carrera UNI-C1"));
+
+        // segunda, tercera... comision de la misma materia en la misma carrera: se permite (cualquier cantidad)
+        for (String nombre : List.of("B", "C", "D")) {
+            postComision(admin, new ComisionRequest(materiaId, otraCarrera, nombre, "2026-1C", 30, null, List.of()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.materiaId").value(materiaId))
+                    .andExpect(jsonPath("$.nombre").value(nombre));
+        }
+        // lo unico que no: repetir nombre y periodo en la misma materia y carrera
+        postComision(admin, new ComisionRequest(materiaId, otraCarrera, "B", "2026-1C", 30, null, List.of()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.codigo").value("COMISION_DUPLICADA"));
+        // el mismo nombre en otro periodo si
+        postComision(admin, new ComisionRequest(materiaId, otraCarrera, "B", "2026-2C", 30, null, List.of()))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void materiaQueNoEsDeLaCarrera_oSinCarrera_devuelve422() throws Exception {
+        String admin = tokenPara("30111222", "Admin1234");
+        long otraCarrera = crearCarreraConPlan(admin, "UNI-C2");
+        Long deTda = crearMateria(admin, "MAT-UNI2");
+
+        postComision(admin, new ComisionRequest(deTda, otraCarrera, "A", "2026-1C", 30, null, List.of()))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.codigo").value("MATERIA_NO_PERTENECE_A_CARRERA"));
+
+        String body = mockMvc.perform(post("/api/v1/materias").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new MateriaRequest("MAT-UNI3", "Sin carrera", 64, null))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long sinCarrera = objectMapper.readTree(body).get("id").asLong();
+        postComision(admin, new ComisionRequest(sinCarrera, null, "A", "2026-1C", 30, null, List.of()))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.codigo").value("MATERIA_SIN_CARRERA"));
+    }
+}

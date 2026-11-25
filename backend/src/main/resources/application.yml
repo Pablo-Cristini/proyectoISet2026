@@ -1,0 +1,39 @@
+spring:
+  servlet:
+    multipart:
+      max-file-size: 25MB   # historiales Excel con cientos de alumnos
+      max-request-size: 25MB
+  application:
+    name: siga
+  profiles:
+    # dev = H2 + datos demo; local = esa misma H2 guardada en disco (data/siga-db.mv.db), para que lo
+    # creado desde la interfaz no se pierda al reiniciar. Docker y los tests usan solo "dev" (en memoria).
+    active: dev,local
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true # declara y fuerza UTF-8 en request/response; sin esto algunos clientes
+                  # (ej. PowerShell 5.1) asumen otro charset cuando el Content-Type no lo declara
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-secret-change-me-dev-only-secret-change-me}
+    access-token-exp-ms: ${JWT_ACCESS_EXP_MS:900000}      # 15 min
+    refresh-token-exp-ms: ${JWT_REFRESH_EXP_MS:604800000} # 7 dias
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  historial:
+    # Ruta al .xlsx del historial academico. Relativa (se resuelve contra el directorio de
+    # trabajo del proceso) o absoluta — configurable por variable de entorno para que cada
+    # instalacion use su propio archivo sin tocar codigo ni reconstruir el backend.
+    excel-path: ${HISTORIAL_EXCEL_PATH:./data/historial-academico.xlsx}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
